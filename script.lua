@@ -1,11 +1,12 @@
--- NOVA CHAT v5 - RABEE OWNER EDITION
--- LocalScript واحد فقط - حطه في StarterPlayer > StarterPlayerScripts
--- الرسايل في تاب "العام" توصل لكل اللاعبين عن طريق TextChatService (بدون سكربت سيرفر)
+-- NOVA CHAT v6 - RABEE OWNER EDITION
+-- LocalScript واحد - حطه في StarterPlayer > StarterPlayerScripts
+-- لازم تحط NOVA_Server.lua في ServerScriptService
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local TextChatService = game:GetService("TextChatService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -23,7 +24,6 @@ local DARK_BUTTON = Color3.fromRGB(38, 35, 45)
 local accent = GOLD
 local rgbEnabled = false
 local rgbNameEnabled = false
-local notificationsEnabled = true
 local currentTab = "عام"
 local displayName = player.DisplayName
 local opened = true
@@ -31,6 +31,18 @@ local busy = false
 local hue = 0
 local noticeId = 0
 local activeBubble
+
+-- جديد
+local remote
+local myRole = "member"
+local onlineUsers = {}
+local convs = {}
+local convOrder = 0
+local activeConv
+local selected = {}
+local stopping = false
+local globalConns = {}
+local fadeA, fadeB
 
 local function make(class, props, parent)
     local obj = Instance.new(class)
@@ -183,14 +195,14 @@ header.InputChanged:Connect(function(obj)
     end
 end)
 
-UserInputService.InputChanged:Connect(function(obj)
+table.insert(globalConns, UserInputService.InputChanged:Connect(function(obj)
     if draggingMain and (
         obj.UserInputType == Enum.UserInputType.MouseMovement
         or obj == dragInput
     ) then
         updateMainDrag(obj)
     end
-end)
+end))
 
 -- Tabs
 local publicTab = make("TextButton", {
@@ -218,11 +230,11 @@ local privateTab = make("TextButton", {
 round(privateTab, 9)
 
 -- Message lists
-local function createMessageList(name)
+local function createMessageList(name, isPrivate)
     local list = make("ScrollingFrame", {
         Name = name,
-        Position = UDim2.fromOffset(10, 96),
-        Size = UDim2.new(1, -20, 1, -165),
+        Position = UDim2.fromOffset(10, isPrivate and 130 or 96),
+        Size = UDim2.new(1, -20, 1, isPrivate and -199 or -165),
         BackgroundColor3 = BLACK,
         BorderSizePixel = 0,
         ScrollBarThickness = 4,
@@ -248,11 +260,266 @@ local function createMessageList(name)
     return list
 end
 
-local publicMessages = createMessageList("PublicMessages")
-local privateMessages = createMessageList("PrivateMessages")
+local publicMessages = createMessageList("PublicMessages", false)
 publicMessages.Visible = true
 
--- Notifications
+-- Private: شريط المحادثات + زر +
+local convBar = make("ScrollingFrame", {
+    Name = "ConvBar",
+    Position = UDim2.fromOffset(10, 96),
+    Size = UDim2.new(1, -20, 0, 30),
+    BackgroundColor3 = BLACK,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 0,
+    ScrollingDirection = Enum.ScrollingDirection.X,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.X,
+    Visible = false
+}, main)
+round(convBar, 8)
+
+make("UIPadding", {
+    PaddingLeft = UDim.new(0, 4),
+    PaddingRight = UDim.new(0, 4)
+}, convBar)
+
+make("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0, 5),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    VerticalAlignment = Enum.VerticalAlignment.Center
+}, convBar)
+
+local plusButton = make("TextButton", {
+    Size = UDim2.fromOffset(32, 26),
+    BackgroundColor3 = DARK_BUTTON,
+    BorderSizePixel = 0,
+    Text = "+",
+    TextColor3 = GOLD,
+    Font = Enum.Font.GothamBold,
+    TextSize = 20,
+    LayoutOrder = 0
+}, convBar)
+round(plusButton, 8)
+
+local privateHint = make("TextLabel", {
+    Position = UDim2.fromOffset(10, 130),
+    Size = UDim2.new(1, -20, 1, -199),
+    BackgroundColor3 = BLACK,
+    BorderSizePixel = 0,
+    Text = "اضغط + لبدء محادثة خاصة مع لاعب أو مجموعة",
+    TextColor3 = MUTED,
+    TextWrapped = true,
+    Font = Enum.Font.Gotham,
+    TextSize = 14,
+    Visible = false
+}, main)
+round(privateHint, 10)
+
+-- اختيار لاعبين للمحادثة الخاصة
+local picker = make("Frame", {
+    Position = UDim2.fromOffset(10, 130),
+    Size = UDim2.new(1, -20, 1, -199),
+    BackgroundColor3 = PANEL,
+    BorderSizePixel = 0,
+    Visible = false,
+    ZIndex = 20
+}, main)
+round(picker, 10)
+outline(picker, GOLD, 1)
+
+local pickerTitle = make("TextLabel", {
+    Position = UDim2.fromOffset(8, 3),
+    Size = UDim2.new(1, -16, 0, 24),
+    BackgroundTransparency = 1,
+    Text = "اختر لاعب أو أكثر لعمل مجموعة",
+    TextColor3 = TEXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    ZIndex = 21
+}, picker)
+
+local pickerList = make("ScrollingFrame", {
+    Position = UDim2.fromOffset(6, 30),
+    Size = UDim2.new(1, -12, 1, -74),
+    BackgroundColor3 = BLACK,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ZIndex = 21
+}, picker)
+round(pickerList, 8)
+
+make("UIPadding", {
+    PaddingTop = UDim.new(0, 4),
+    PaddingBottom = UDim.new(0, 4),
+    PaddingLeft = UDim.new(0, 4),
+    PaddingRight = UDim.new(0, 4)
+}, pickerList)
+
+make("UIListLayout", {
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, pickerList)
+
+local pickerEmpty = make("TextLabel", {
+    Position = UDim2.fromOffset(10, 34),
+    Size = UDim2.new(1, -20, 0, 40),
+    BackgroundTransparency = 1,
+    Text = "ما في لاعبين ثانيين مشغلين السكربت",
+    TextColor3 = MUTED,
+    TextWrapped = true,
+    Font = Enum.Font.Gotham,
+    TextSize = 13,
+    Visible = false,
+    ZIndex = 22
+}, picker)
+
+local pickerStart = make("TextButton", {
+    Position = UDim2.new(0, 6, 1, -38),
+    Size = UDim2.new(1, -12, 0, 32),
+    BackgroundColor3 = GOLD,
+    BorderSizePixel = 0,
+    Text = "ابدأ المحادثة",
+    TextColor3 = BLACK,
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    ZIndex = 21
+}, picker)
+round(pickerStart, 7)
+
+local function makeKey(ids)
+    local copy = table.clone(ids)
+    table.sort(copy)
+    return table.concat(copy, ",")
+end
+
+local function short(s, n)
+    local len = utf8.len(s)
+    if len and len > n then
+        return s:sub(1, utf8.offset(s, n + 1) - 1) .. "…"
+    end
+    return s
+end
+
+local function convTitle(ids)
+    local names = {}
+    for _, id in ipairs(ids) do
+        if id ~= player.UserId then
+            local n = onlineUsers[id]
+            if not n then
+                local p = Players:GetPlayerByUserId(id)
+                n = p and p.DisplayName or tostring(id)
+            end
+            table.insert(names, n)
+        end
+    end
+    local title = table.concat(names, "، ")
+    if #ids > 2 then title = "👥 " .. title end
+    return title
+end
+
+local function refreshConvUI()
+    local onPrivate = currentTab == "خاص"
+    convBar.Visible = onPrivate
+    privateHint.Visible = onPrivate and activeConv == nil
+    for key, conv in pairs(convs) do
+        local isActive = activeConv == key
+        conv.list.Visible = onPrivate and isActive
+        conv.chip.BackgroundColor3 = isActive and accent or DARK_BUTTON
+        conv.chip.TextColor3 = isActive and BLACK or TEXT
+    end
+    plusButton.TextColor3 = accent
+    pickerStart.BackgroundColor3 = accent
+end
+
+local function showConversation(key)
+    activeConv = key
+    picker.Visible = false
+    refreshConvUI()
+end
+
+local function getConv(key, ids)
+    if convs[key] then return convs[key] end
+    convOrder += 1
+
+    local list = createMessageList("Conv" .. convOrder, true)
+    local chip = make("TextButton", {
+        Size = UDim2.fromOffset(0, 26),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = DARK_BUTTON,
+        BorderSizePixel = 0,
+        Text = short(convTitle(ids), 16),
+        TextColor3 = TEXT,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        LayoutOrder = convOrder
+    }, convBar)
+    round(chip, 8)
+    make("UIPadding", {
+        PaddingLeft = UDim.new(0, 10),
+        PaddingRight = UDim.new(0, 10)
+    }, chip)
+    chip.Activated:Connect(function()
+        showConversation(key)
+    end)
+
+    convs[key] = { ids = ids, list = list, chip = chip }
+    return convs[key]
+end
+
+local function rebuildPicker()
+    for _, item in ipairs(pickerList:GetChildren()) do
+        if item:IsA("TextButton") then item:Destroy() end
+    end
+
+    for id in pairs(selected) do
+        if not onlineUsers[id] then selected[id] = nil end
+    end
+
+    local entries = {}
+    for id, name in pairs(onlineUsers) do
+        if id ~= player.UserId then
+            table.insert(entries, { id = id, name = name })
+        end
+    end
+    table.sort(entries, function(a, b)
+        return a.name:lower() < b.name:lower()
+    end)
+
+    pickerEmpty.Visible = #entries == 0
+
+    for i, e in ipairs(entries) do
+        local on = selected[e.id] == true
+        local button = make("TextButton", {
+            Size = UDim2.new(1, 0, 0, 30),
+            BackgroundColor3 = on and accent or DARK_BUTTON,
+            BorderSizePixel = 0,
+            Text = (on and "✓ " or "") .. e.name,
+            TextColor3 = on and BLACK or TEXT,
+            Font = Enum.Font.GothamBold,
+            TextSize = 13,
+            LayoutOrder = i,
+            ZIndex = 22
+        }, pickerList)
+        round(button, 7)
+        button.Activated:Connect(function()
+            selected[e.id] = not selected[e.id] or nil
+            rebuildPicker()
+        end)
+    end
+end
+
+local function setUsers(list)
+    onlineUsers = {}
+    for _, e in ipairs(list or {}) do
+        onlineUsers[e.id] = e.name
+    end
+    if picker.Visible then rebuildPicker() end
+end
+
+-- Notifications (للرسايل فقط، وتختفي بسلاسة)
 local notification = make("TextLabel", {
     AnchorPoint = Vector2.new(1, 0),
     Position = UDim2.new(1, -12, 0, -55),
@@ -271,11 +538,16 @@ round(notification, 10)
 local notificationStroke = outline(notification, GOLD, 1)
 
 local function notify(message)
-    if not notificationsEnabled then return end
-
     noticeId += 1
     local id = noticeId
+
+    if fadeA then fadeA:Cancel() end
+    if fadeB then fadeB:Cancel() end
+
     notification.Text = message
+    notification.BackgroundTransparency = 0
+    notification.TextTransparency = 0
+    notificationStroke.Transparency = 0
     notification.Position = UDim2.new(1, -12, 0, -55)
 
     tween(notification, 0.3, {
@@ -284,9 +556,17 @@ local function notify(message)
 
     task.delay(2.8, function()
         if id == noticeId and notification.Parent then
-            tween(notification, 0.25, {
-                Position = UDim2.new(1, -12, 0, -55)
+            fadeA = tween(notification, 0.5, {
+                BackgroundTransparency = 1,
+                TextTransparency = 1
             })
+            fadeB = tween(notificationStroke, 0.5, { Transparency = 1 })
+        end
+    end)
+
+    task.delay(3.4, function()
+        if id == noticeId and notification.Parent then
+            notification.Position = UDim2.new(1, -12, 0, -55)
         end
     end)
 end
@@ -372,6 +652,17 @@ local function clearList(list)
         if item:IsA("Frame") or item:IsA("TextLabel") then
             item:Destroy()
         end
+    end
+end
+
+-- رسايل النظام (بدل الإشعارات القديمة)
+local function sysMsg(text)
+    if currentTab == "عام" then
+        addMessage(publicMessages, "النظام", text, false)
+    elseif activeConv and convs[activeConv] then
+        addMessage(convs[activeConv].list, "النظام", text, false)
+    else
+        notify(text)
     end
 end
 
@@ -506,14 +797,14 @@ for i = 1, 6 do
     }, stickerGrid)
     round(sticker, 7)
     sticker.Activated:Connect(function()
-        notify("أضف صورة ملصق معتمدة لهذا الزر")
+        sysMsg("أضف صورة ملصق معتمدة لهذا الزر")
     end)
 end
 
 -- Settings panel
 local settingsPanel = make("Frame", {
     Position = UDim2.new(0, 12, 0, 54),
-    Size = UDim2.fromOffset(250, 235),
+    Size = UDim2.fromOffset(250, 197),
     BackgroundColor3 = PANEL,
     BorderSizePixel = 0,
     Visible = false,
@@ -566,8 +857,7 @@ end
 
 local saveName = settingButton("حفظ اسم العرض", 77)
 local rgbButton = settingButton("RGB: OFF", 115)
-local noticeButton = settingButton("الإشعارات: ON", 153)
-local serverButton = settingButton("تغيير السيرفر", 191)
+local serverButton = settingButton("إيقاف السكربت", 153)
 
 -- Floating toggle
 local toggle = make("TextButton", {
@@ -596,12 +886,9 @@ local function applyTheme()
     notificationStroke.Color = accent
 
     rgbButton.Text = rgbEnabled and "RGB: ON" or "RGB: OFF"
-    noticeButton.Text = notificationsEnabled
-        and "الإشعارات: ON" or "الإشعارات: OFF"
 
     rgbButton.BackgroundColor3 = accent
     saveName.BackgroundColor3 = accent
-    noticeButton.BackgroundColor3 = accent
     serverButton.BackgroundColor3 = accent
     sendButton.BackgroundColor3 = accent
     stickerButton.TextColor3 = accent
@@ -610,35 +897,46 @@ local function applyTheme()
         currentTab == "عام" and accent or DARK_BUTTON
     privateTab.BackgroundColor3 =
         currentTab == "خاص" and accent or DARK_BUTTON
+    refreshConvUI()
 end
 
 saveName.Activated:Connect(function()
     local value = nameInput.Text:match("^%s*(.-)%s*$")
     if not value or value == "" then
-        notify("اكتب اسمًا أولًا")
+        sysMsg("اكتب اسمًا أولًا")
         return
     end
     displayName = value:sub(1, 24)
-    notify("تغير الاسم داخل واجهة NOVA فقط")
+    sysMsg("تغير الاسم داخل واجهة NOVA فقط")
 end)
 
 rgbButton.Activated:Connect(function()
     rgbEnabled = not rgbEnabled
     applyTheme()
-    notify(rgbEnabled and "تم تشغيل RGB للواجهة 🌈"
+    sysMsg(rgbEnabled and "تم تشغيل RGB للواجهة 🌈"
         or "رجع الوضع الأسود والذهبي 🖤")
 end)
 
-noticeButton.Activated:Connect(function()
-    notificationsEnabled = not notificationsEnabled
-    applyTheme()
-    if notificationsEnabled then
-        notify("تم تشغيل الإشعارات")
-    end
-end)
-
+-- إيقاف السكربت نهائيًا
 serverButton.Activated:Connect(function()
-    notify("تغيير السيرفر يحتاج وجهة Roblox مسموحة")
+    if stopping then return end
+    stopping = true
+    settingsPanel.Visible = false
+    main.Visible = false
+    toggle.Visible = false
+
+    if remote then
+        pcall(function() remote:FireServer("Leave") end)
+    end
+
+    notify("وداعا نراك مجددا 👋")
+
+    task.delay(3.5, function()
+        for _, c in ipairs(globalConns) do
+            c:Disconnect()
+        end
+        gui:Destroy()
+    end)
 end)
 
 settingsButton.Activated:Connect(function()
@@ -655,13 +953,46 @@ stickerButton.Activated:Connect(function()
     end
 end)
 
+-- Private: فتح اختيار اللاعبين
+local function openPicker()
+    selected = {}
+    pickerTitle.Text = "اختر لاعب أو أكثر لعمل مجموعة"
+    rebuildPicker()
+    picker.Visible = true
+    settingsPanel.Visible = false
+    stickerPanel.Visible = false
+end
+
+plusButton.Activated:Connect(function()
+    if picker.Visible then
+        picker.Visible = false
+    else
+        openPicker()
+    end
+end)
+
+pickerStart.Activated:Connect(function()
+    local ids = { player.UserId }
+    for id in pairs(selected) do
+        table.insert(ids, id)
+    end
+    if #ids < 2 then
+        pickerTitle.Text = "اختر لاعب واحد على الأقل"
+        return
+    end
+    table.sort(ids)
+    local key = makeKey(ids)
+    getConv(key, ids)
+    showConversation(key)
+end)
+
 -- Tab switching
 local function selectTab(tab)
     currentTab = tab
     publicMessages.Visible = (tab == "عام")
-    privateMessages.Visible = (tab == "خاص")
     settingsPanel.Visible = false
     stickerPanel.Visible = false
+    picker.Visible = false
     applyTheme()
 end
 
@@ -673,29 +1004,55 @@ privateTab.Activated:Connect(function()
     selectTab("خاص")
 end)
 
--- Network (استقبال وإرسال الرسايل عن طريق شات روبلوكس - فلترة تلقائية)
-local generalChannel
+-- Network (عن طريق سكربت السيرفر - الرسايل توصل بس لمشغلين السكربت)
+local function onServerEvent(kind, a, b, c, d)
+    if kind == "Hello" then
+        myRole = a
+        setUsers(b)
+
+    elseif kind == "Users" then
+        setUsers(a)
+
+    elseif kind == "Role" then
+        myRole = a
+
+    elseif kind == "Joined" then
+        addMessage(publicMessages, "NOVA", a .. " شغّل السكربت ✅", false)
+
+    elseif kind == "Left" then
+        addMessage(publicMessages, "NOVA", a .. " طفّى السكربت 👋", false)
+
+    elseif kind == "Public" then
+        addMessage(publicMessages, a, b, false)
+        if currentTab ~= "عام" or not opened then
+            notify(a .. ": " .. b)
+        end
+
+    elseif kind == "Private" then
+        local key, ids, name, text = a, b, c, d
+        getConv(key, ids)
+        if not activeConv then
+            activeConv = key
+            refreshConvUI()
+        end
+        addMessage(convs[key].list, name, text, false)
+        if not (opened and currentTab == "خاص" and activeConv == key) then
+            notify("🔒 " .. name .. ": " .. text)
+        end
+
+    elseif kind == "Info" then
+        sysMsg(a)
+    end
+end
 
 task.spawn(function()
-    local channels = TextChatService:WaitForChild("TextChannels", 10)
-    generalChannel = channels and channels:WaitForChild("RBXGeneral", 10)
-    if not generalChannel then
-        notify("ما لقيت قناة الشات، تأكد إن ChatVersion = TextChatService")
+    remote = ReplicatedStorage:WaitForChild("NOVAEvent", 10)
+    if not remote then
+        sysMsg("ما لقيت سكربت السيرفر (NOVAEvent) - حط NOVA_Server في ServerScriptService")
         return
     end
-
-    generalChannel.MessageReceived:Connect(function(msg)
-        local source = msg.TextSource
-        if not source or source.UserId == player.UserId then return end
-
-        local sender = Players:GetPlayerByUserId(source.UserId)
-        local name = sender and sender.DisplayName or source.Name
-
-        addMessage(publicMessages, name, msg.Text, false)
-        if currentTab ~= "عام" or not opened then
-            notify(name .. ": " .. msg.Text)
-        end
-    end)
+    table.insert(globalConns, remote.OnClientEvent:Connect(onServerEvent))
+    remote:FireServer("Join")
 end)
 
 -- Commands
@@ -707,12 +1064,19 @@ local function sendMessage()
     command = command and string.lower(command) or ""
 
     if command == "/help" then
-        notify("/rgbname | /name اسم | /clear")
+        local text = "/rgbname | /name اسم | /clear"
+        if myRole ~= "member" then
+            text = text .. " | /kickplayer اسم [سبب]"
+        end
+        if myRole == "owner" then
+            text = text .. " | /giveadmin اسم"
+        end
+        sysMsg(text)
         input.Text = ""
         return
     elseif command == "/rgbname" then
         rgbNameEnabled = not rgbNameEnabled
-        notify(rgbNameEnabled and "RGB للاسم: ON" or "RGB للاسم: OFF")
+        sysMsg(rgbNameEnabled and "RGB للاسم: ON" or "RGB للاسم: OFF")
         input.Text = ""
         return
     elseif command == "/name" then
@@ -720,34 +1084,77 @@ local function sendMessage()
         if value and value ~= "" then
             displayName = value:sub(1, 24)
             nameInput.Text = displayName
-            notify("تم تغيير الاسم داخل الواجهة")
+            sysMsg("تم تغيير الاسم داخل الواجهة")
         else
-            notify("اكتب الاسم بعد /name")
+            sysMsg("اكتب الاسم بعد /name")
         end
         input.Text = ""
         return
     elseif command == "/clear" then
-        clearList(currentTab == "عام" and publicMessages or privateMessages)
-        notify("تم مسح الرسايل الظاهرة")
+        if currentTab == "عام" then
+            clearList(publicMessages)
+        elseif activeConv and convs[activeConv] then
+            clearList(convs[activeConv].list)
+        end
+        input.Text = ""
+        return
+    elseif command == "/kickplayer" then
+        if myRole == "member" then
+            sysMsg("هالأمر للأدمن وصاحب السكربت فقط")
+        elseif not remote then
+            sysMsg("مو متصل بالسيرفر")
+        else
+            local target, reason = (rest or ""):match("^(%S+)%s*(.*)$")
+            if target then
+                remote:FireServer("Command", "kick", target, reason)
+            else
+                sysMsg("الاستخدام: /kickplayer اسم [سبب]")
+            end
+        end
+        input.Text = ""
+        return
+    elseif command == "/giveadmin" then
+        if myRole ~= "owner" then
+            sysMsg("هالأمر لصاحب السكربت فقط")
+        elseif not remote then
+            sysMsg("مو متصل بالسيرفر")
+        else
+            local target = (rest or ""):match("^(%S+)")
+            if target then
+                remote:FireServer("Command", "giveadmin", target)
+            else
+                sysMsg("الاستخدام: /giveadmin اسم")
+            end
+        end
         input.Text = ""
         return
     end
 
-    local list = currentTab == "عام" and publicMessages or privateMessages
+    local list
+    if currentTab == "عام" then
+        list = publicMessages
+    else
+        local conv = activeConv and convs[activeConv]
+        if not conv then
+            openPicker()
+            return
+        end
+        list = conv.list
+    end
+
+    if not remote then
+        sysMsg("مو متصل بالسيرفر")
+        return
+    end
+
     addMessage(list, displayName, message, rgbNameEnabled)
     showLocalBubble(message)
 
-    -- إرسال لباقي اللاعبين (تاب العام فقط)
-    if currentTab == "عام" and generalChannel then
-        local text = message:sub(1, 200)
-        task.spawn(function()
-            local ok = pcall(function()
-                generalChannel:SendAsync(text)
-            end)
-            if not ok then
-                notify("فشل إرسال الرسالة")
-            end
-        end)
+    local text = message:sub(1, 200)
+    if currentTab == "عام" then
+        remote:FireServer("Public", text)
+    else
+        remote:FireServer("Private", convs[activeConv].ids, text)
     end
 
     input.Text = ""
@@ -808,7 +1215,7 @@ toggle.InputBegan:Connect(function(obj)
     end
 end)
 
-UserInputService.InputChanged:Connect(function(obj)
+table.insert(globalConns, UserInputService.InputChanged:Connect(function(obj)
     if not dragging then return end
 
     if obj.UserInputType == Enum.UserInputType.MouseMovement
@@ -819,14 +1226,14 @@ UserInputService.InputChanged:Connect(function(obj)
             buttonStart.Y.Scale, buttonStart.Y.Offset + delta.Y
         )
     end
-end)
+end))
 
-UserInputService.InputEnded:Connect(function(obj)
+table.insert(globalConns, UserInputService.InputEnded:Connect(function(obj)
     if obj.UserInputType == Enum.UserInputType.MouseButton1
         or obj.UserInputType == Enum.UserInputType.Touch then
         dragging = false
     end
-end)
+end))
 
 -- Responsive layout (أصغر للجوالات)
 local function resize()
@@ -852,15 +1259,17 @@ resize()
 local function connectCamera()
     local camera = workspace.CurrentCamera
     if camera then
-        camera:GetPropertyChangedSignal("ViewportSize"):Connect(resize)
+        table.insert(globalConns,
+            camera:GetPropertyChangedSignal("ViewportSize"):Connect(resize))
     end
 end
 
 connectCamera()
-workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-    task.defer(connectCamera)
-    task.defer(resize)
-end)
+table.insert(globalConns,
+    workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        task.defer(connectCamera)
+        task.defer(resize)
+    end))
 
 -- RGB animation
 task.spawn(function()
@@ -874,10 +1283,238 @@ task.spawn(function()
 end)
 
 applyTheme()
-notify("مرحبًا بك في NOVA CHAT ✨")
-
-task.delay(3.2, function()
-    notify("صنع من قبل ربيع | Rabee1258")
-end)
 
 addMessage(publicMessages, "NOVA", "تم تشغيل الواجهة.", false)
+addMessage(publicMessages, "NOVA", "صنع من قبل ربيع | Rabee1258", false)
+-- NOVA CHAT SERVER
+-- Script عادي - حطه في ServerScriptService
+-- بيعمل RemoteEvent اسمه NOVAEvent وبيوصل الرسايل بين اللي مشغلين السكربت بس
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextService = game:GetService("TextService")
+
+-- صاحب السكربت (الأفضل تحط الـ UserId بدل الاسم)
+local OWNER_NAMES = { ["Rabee1258"] = true }
+local OWNER_USER_IDS = { [5732145417] = true }
+    -- [1
+
+local remote = ReplicatedStorage:FindFirstChild("NOVAEvent")
+if not remote then
+    remote = Instance.new("RemoteEvent")
+    remote.Name = "NOVAEvent"
+    remote.Parent = ReplicatedStorage
+end
+
+local users = {}     -- اللاعبين اللي مشغلين السكربت
+local admins = {}    -- [UserId] = true
+local lastAction = {}
+
+local function isOwner(p)
+    return OWNER_NAMES[p.Name] == true or OWNER_USER_IDS[p.UserId] == true
+end
+
+local function roleOf(p)
+    if isOwner(p) then return "owner" end
+    if admins[p.UserId] then return "admin" end
+    return "member"
+end
+
+local function userList()
+    local list = {}
+    for p in pairs(users) do
+        table.insert(list, { id = p.UserId, name = p.DisplayName })
+    end
+    return list
+end
+
+local function snapshotUsers()
+    local list = {}
+    for p in pairs(users) do
+        table.insert(list, p)
+    end
+    return list
+end
+
+local function broadcast(...)
+    for _, p in ipairs(snapshotUsers()) do
+        remote:FireClient(p, ...)
+    end
+end
+
+local function filterMessage(text, sender, context)
+    local ok, result = pcall(function()
+        return TextService:FilterStringAsync(text, sender.UserId, context)
+    end)
+    return ok and result or nil
+end
+
+local function chatFor(filterObject, recipient)
+    local ok, text = pcall(function()
+        return filterObject:GetChatForUserAsync(recipient.UserId)
+    end)
+    return ok and text or nil
+end
+
+local function makeKey(ids)
+    local copy = table.clone(ids)
+    table.sort(copy)
+    return table.concat(copy, ",")
+end
+
+local function removeUser(player)
+    if not users[player] then return end
+    users[player] = nil
+    lastAction[player] = nil
+    broadcast("Left", player.DisplayName)
+    broadcast("Users", userList())
+end
+
+local function findTarget(query)
+    if typeof(query) ~= "string" or query == "" then return nil end
+    query = query:lower()
+    local prefixMatch
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Name:lower() == query or p.DisplayName:lower() == query then
+            return p
+        end
+        if not prefixMatch and (p.Name:lower():sub(1, #query) == query
+            or p.DisplayName:lower():sub(1, #query) == query) then
+            prefixMatch = p
+        end
+    end
+    return prefixMatch
+end
+
+remote.OnServerEvent:Connect(function(player, kind, a, b, c)
+    if typeof(kind) ~= "string" then return end
+
+    if kind == "Join" then
+        local already = users[player]
+        users[player] = true
+        remote:FireClient(player, "Hello", roleOf(player), userList())
+        if not already then
+            broadcast("Joined", player.DisplayName)
+            broadcast("Users", userList())
+        end
+        return
+    end
+
+    if kind == "Leave" then
+        removeUser(player)
+        return
+    end
+
+    if not users[player] then return end
+
+    -- حماية من السبام
+    local now = os.clock()
+    if now - (lastAction[player] or 0) < 0.4 then return end
+    lastAction[player] = now
+
+    if kind == "Public" then
+        if typeof(a) ~= "string" then return end
+        local text = a:sub(1, 200)
+        if text:gsub("%s", "") == "" then return end
+
+        local filtered = filterMessage(text, player, Enum.TextFilterContext.PublicChat)
+        if not filtered then return end
+
+        for _, p in ipairs(snapshotUsers()) do
+            if p ~= player then
+                local clean = chatFor(filtered, p)
+                if clean then
+                    remote:FireClient(p, "Public", player.DisplayName, clean)
+                end
+            end
+        end
+
+    elseif kind == "Private" then
+        -- a = قائمة UserIds (تشمل المرسل) ، b = النص
+        if typeof(a) ~= "table" or typeof(b) ~= "string" then return end
+        if #a < 2 or #a > 8 then return end
+
+        local ids, seen, members = {}, {}, {}
+        local includesSender = false
+        for _, id in ipairs(a) do
+            if typeof(id) ~= "number" or seen[id] then return end
+            seen[id] = true
+            local p = Players:GetPlayerByUserId(id)
+            if not p or not users[p] then return end
+            if p == player then includesSender = true end
+            table.insert(ids, id)
+            table.insert(members, p)
+        end
+        if not includesSender then return end
+
+        local text = b:sub(1, 200)
+        if text:gsub("%s", "") == "" then return end
+
+        local filtered = filterMessage(text, player, Enum.TextFilterContext.PrivateChat)
+        if not filtered then return end
+
+        table.sort(ids)
+        local key = makeKey(ids)
+        for _, p in ipairs(members) do
+            if p ~= player then
+                local clean = chatFor(filtered, p)
+                if clean then
+                    remote:FireClient(p, "Private", key, ids, player.DisplayName, clean)
+                end
+            end
+        end
+
+    elseif kind == "Command" then
+        local role = roleOf(player)
+
+        if a == "kick" then
+            if role == "member" then
+                remote:FireClient(player, "Info", "هالأمر للأدمن وصاحب السكربت فقط")
+                return
+            end
+            local target = findTarget(b)
+            if not target then
+                remote:FireClient(player, "Info", "ما لقيت اللاعب")
+                return
+            end
+            if target == player then
+                remote:FireClient(player, "Info", "ما بتقدر تطرد نفسك")
+                return
+            end
+            if isOwner(target) then
+                remote:FireClient(player, "Info", "ما بتقدر تطرد صاحب السكربت")
+                return
+            end
+            if admins[target.UserId] and role ~= "owner" then
+                remote:FireClient(player, "Info", "ما بتقدر تطرد أدمن")
+                return
+            end
+            local reason = (typeof(c) == "string" and c ~= "") and c:sub(1, 100)
+                or "تم طردك من السيرفر"
+            remote:FireClient(player, "Info", "تم طرد " .. target.DisplayName)
+            target:Kick(reason)
+
+        elseif a == "giveadmin" then
+            if role ~= "owner" then
+                remote:FireClient(player, "Info", "هالأمر لصاحب السكربت فقط")
+                return
+            end
+            local target = findTarget(b)
+            if not target then
+                remote:FireClient(player, "Info", "ما لقيت اللاعب")
+                return
+            end
+            admins[target.UserId] = true
+            remote:FireClient(player, "Info", "تم إعطاء " .. target.DisplayName .. " أدمن")
+            if users[target] then
+                remote:FireClient(target, "Role", "admin")
+                remote:FireClient(target, "Info", "صرت أدمن بالسكربت 👑")
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    removeUser(player)
+    admins[player.UserId] = nil
+end)
