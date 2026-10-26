@@ -1,11 +1,11 @@
-
--- NOVA CHAT v4 - RABEE OWNER EDITION
--- Place in StarterPlayer > StarterPlayerScripts
--- Local UI prototype; messages are not shared with other players.
+-- NOVA CHAT v5 - RABEE OWNER EDITION
+-- LocalScript واحد فقط - حطه في StarterPlayer > StarterPlayerScripts
+-- الرسايل في تاب "العام" توصل لكل اللاعبين عن طريق TextChatService (بدون سكربت سيرفر)
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local TextChatService = game:GetService("TextChatService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -673,6 +673,31 @@ privateTab.Activated:Connect(function()
     selectTab("خاص")
 end)
 
+-- Network (استقبال وإرسال الرسايل عن طريق شات روبلوكس - فلترة تلقائية)
+local generalChannel
+
+task.spawn(function()
+    local channels = TextChatService:WaitForChild("TextChannels", 10)
+    generalChannel = channels and channels:WaitForChild("RBXGeneral", 10)
+    if not generalChannel then
+        notify("ما لقيت قناة الشات، تأكد إن ChatVersion = TextChatService")
+        return
+    end
+
+    generalChannel.MessageReceived:Connect(function(msg)
+        local source = msg.TextSource
+        if not source or source.UserId == player.UserId then return end
+
+        local sender = Players:GetPlayerByUserId(source.UserId)
+        local name = sender and sender.DisplayName or source.Name
+
+        addMessage(publicMessages, name, msg.Text, false)
+        if currentTab ~= "عام" or not opened then
+            notify(name .. ": " .. msg.Text)
+        end
+    end)
+end)
+
 -- Commands
 local function sendMessage()
     local message = input.Text
@@ -703,15 +728,27 @@ local function sendMessage()
         return
     elseif command == "/clear" then
         clearList(currentTab == "عام" and publicMessages or privateMessages)
-        notify("تم مسح الرسائل الظاهرة")
+        notify("تم مسح الرسايل الظاهرة")
         input.Text = ""
         return
     end
 
-    -- Local preview only; not sent to other players.
     local list = currentTab == "عام" and publicMessages or privateMessages
     addMessage(list, displayName, message, rgbNameEnabled)
     showLocalBubble(message)
+
+    -- إرسال لباقي اللاعبين (تاب العام فقط)
+    if currentTab == "عام" and generalChannel then
+        local text = message:sub(1, 200)
+        task.spawn(function()
+            local ok = pcall(function()
+                generalChannel:SendAsync(text)
+            end)
+            if not ok then
+                notify("فشل إرسال الرسالة")
+            end
+        end)
+    end
 
     input.Text = ""
     stickerPanel.Visible = false
@@ -791,17 +828,19 @@ UserInputService.InputEnded:Connect(function(obj)
     end
 end)
 
--- Responsive layout
+-- Responsive layout (أصغر للجوالات)
 local function resize()
     local camera = workspace.CurrentCamera
     if not camera then return end
 
     local viewport = camera.ViewportSize
-    if viewport.X < 600 then
-        local width = math.max(260, math.min(viewport.X - 24, 390))
-        local height = math.max(300, math.min(430, viewport.Y - 50))
+    local isMobile = UserInputService.TouchEnabled or viewport.X < 600
+
+    if isMobile then
+        local width = math.clamp(viewport.X - 24, 250, 300)
+        local height = math.clamp(viewport.Y - 60, 220, 300)
         main.Size = UDim2.fromOffset(width, height)
-        toggle.Size = UDim2.fromOffset(60, 60)
+        toggle.Size = UDim2.fromOffset(46, 46)
     else
         main.Size = UDim2.fromOffset(365, 430)
         toggle.Size = UDim2.fromOffset(58, 58)
